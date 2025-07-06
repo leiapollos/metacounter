@@ -1,0 +1,44 @@
+# metacounter.txt - Configuration for the Metacounter Tool
+#
+# This file tells the Metacounter tool what to scan and how to generate the output file.
+# Keys and values are separated by a colon ':'.
+
+# --- Generated File Configuration ---
+
+# [Required] The path to the generated C++ header file.
+output_file: src/generated_counter_registry.h
+
+# [Optional] The name of the generated 'enum class'. Defaults to 'CounterID'.
+enum_name: CounterID
+
+# [Optional] The name of the generated 'constexpr int' for the total count. Defaults to 'MAX_COUNT'.
+count_name: MAX_COUNT
+
+
+# --- Marker Configuration ---
+
+# [Optional] The macro name for standard registration. Defaults to 'REGISTER_COUNTER'.
+marker_standard: REGISTER_COUNTER
+
+# [Optional] The macro name for registration that requires uniqueness. Defaults to 'REGISTER_UNIQUE_COUNTER'.
+marker_unique: REGISTER_UNIQUE_COUNTER
+
+
+# --- Rule Configuration ---
+
+# [Required] A space-separated list of file extensions to scan.
+scan_ext: .h .hpp .cpp .c
+
+# [Optional] The policy for handling duplicate standard markers.
+#   - ignore: (Default) Silently allows duplicates; the first one found is used.
+#   - warn:   Prints a warning to the console for each duplicate.
+#   - error:  Fails the build if any duplicates are found.
+duplicate_policy: warn
+
+
+# --- Source Path Configuration ---
+
+# [Required] List of source files and directories to scan between the markers.
+begin_sources
+src/
+end_sources
