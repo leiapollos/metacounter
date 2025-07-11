@@ -145,6 +145,22 @@ typedef enum {
 
 With the header generated, your project can now compile. The `Profiler` class has access to the `MAX_COUNT_INT` constant to size its array, and each `REGISTER_COUNTER` macro expands to its corresponding enum value at compile time.
 
+## Configuration Reference
+
+The `metacounter.txt` file supports the following options:
+
+| Key | Required | Description | Default |
+|-----|----------|-------------|---------|
+| `output_file` | Yes | Path to the generated header file | - |
+| `scan_ext` | Yes | Space-separated list of file extensions to scan | - |
+| `enum_name` | No | Name of the generated enum | `CounterID` |
+| `count_name` | No | Name of the count constant | `MAX_COUNT` |
+| `marker_standard` | No | Macro name for standard registration | `REGISTER_COUNTER` |
+| `marker_unique` | No | Macro name for unique registration | `REGISTER_UNIQUE_COUNTER` |
+| `duplicate_policy` | No | How to handle duplicates: `ignore`, `warn`, or `error` | `ignore` |
+
+Source directories and files to scan are specified between `begin_sources` and `end_sources` markers.
+
 ## License
 
 This project is licensed under the MIT License.
