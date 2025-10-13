@@ -14,56 +14,43 @@ typedef enum {
 } DuplicateHandlingPolicy;
 
 typedef struct CounterProject CounterProject;
-
 typedef struct CounterRegistryMarkers {
-    const char *standard;
-    const char *unique;
+    const char *standardMacroName;
+    const char *uniqueMacroName;
 } CounterRegistryMarkers;
 
 typedef struct CounterRegistryOptions {
-    const char *output_header;
-    const char *enum_name;
-    const char *count_name;
-    CounterRegistryMarkers markers;
-    DuplicateHandlingPolicy duplicate_policy;
+    const char *outputHeaderPath;
+    const char *enumTypeName;
+    const char *countConstantName;
+    CounterRegistryMarkers markerNames;
+    DuplicateHandlingPolicy duplicatePolicy;
 } CounterRegistryOptions;
 
 typedef struct SelfRebuildConfiguration {
     const char *cc;
     const char *cflags;
-    const char *src_path;
-    const char *exe_path;
+    const char *srcPath;
+    const char *exePath;
 } SelfRebuildConfiguration;
 
-// Project lifecycle (returns heap-allocated handle; no free needed for short-lived tools)
 CounterProject* mc_begin_counter_project(void);
-
-// Add inputs (plural-only). Strings are copied into the project's arena.
 bool mc_add_file_extensions(CounterProject *project, const char *const *extensions, size_t count);
 bool mc_add_search_directories(CounterProject *project, const char *const *directories, size_t count);
 bool mc_add_input_paths(CounterProject *project, const char *const *paths, size_t count);
-
-// Add a registry to generate
 bool mc_add_counter_registry(CounterProject *project, CounterRegistryOptions options);
-
-// Run scan once and emit all registries
 bool mc_generate_all_registries(CounterProject *project);
-
-// Self-rebuild helper (renamed to avoid copying nob). Returns true when done (or after re-exec).
 bool mc_execute_self_rebuild(int argc, char **argv, SelfRebuildConfiguration options);
 
-// Macros
 #define MC_EXTS(project, ...) do { const char* _mc_extensions_array[] = { __VA_ARGS__ }; mc_add_file_extensions((project), _mc_extensions_array, sizeof(_mc_extensions_array)/sizeof(_mc_extensions_array[0])); } while (0)
 #define MC_FOLDERS(project, ...) do { const char* _mc_directories_array[] = { __VA_ARGS__ }; mc_add_search_directories((project), _mc_directories_array, sizeof(_mc_directories_array)/sizeof(_mc_directories_array[0])); } while (0)
 #define MC_PATHS(project, ...) do { const char* _mc_paths_array[] = { __VA_ARGS__ }; mc_add_input_paths((project), _mc_paths_array, sizeof(_mc_paths_array)/sizeof(_mc_paths_array[0])); } while (0)
 #define MC_REGISTRY(project, ...) mc_add_counter_registry((project), (CounterRegistryOptions){ __VA_ARGS__ })
-#define META_SELF_REBUILD(argc, argv, ...) mc_execute_self_rebuild((argc), (argv), (SelfRebuildConfiguration){ .cc = "cc", .cflags = "-O2 -Wall -Wextra", .src_path = __FILE__, .exe_path = NULL, __VA_ARGS__ })
+#define META_SELF_REBUILD(argc, argv, ...) mc_execute_self_rebuild((argc), (argv), (SelfRebuildConfiguration){ .cc = "cc", .cflags = "-O2 -Wall -Wextra", .srcPath = __FILE__, .exePath = NULL, __VA_ARGS__ })
 
 #ifdef __cplusplus
 } // extern "C"
 #endif
-
-// --------------------------- Implementation ------------------------------
 
 #ifdef METACOUNTER_IMPLEMENTATION
 
@@ -72,6 +59,7 @@ bool mc_execute_self_rebuild(int argc, char **argv, SelfRebuildConfiguration opt
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <ctype.h>
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -89,8 +77,6 @@ bool mc_execute_self_rebuild(int argc, char **argv, SelfRebuildConfiguration opt
 extern "C" {
 #endif
 
-// ----------------------------- Arena --------------------------------------
-
 typedef struct LinearMemoryArena {
     unsigned char *memory;
     size_t pageSize;
@@ -99,7 +85,7 @@ typedef struct LinearMemoryArena {
     size_t position;
 } LinearMemoryArena;
 
-static size_t meta_get_page_size(void) {
+static size_t get_page_size(void) {
 #ifdef _WIN32
     SYSTEM_INFO systemInfo;
     GetSystemInfo(&systemInfo);
@@ -110,13 +96,13 @@ static size_t meta_get_page_size(void) {
 #endif
 }
 
-static size_t meta_align_up(size_t size, size_t alignment) {
+static size_t align_up(size_t size, size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
 }
 
 static void arena_initialize(LinearMemoryArena *arena, size_t reserveSizeBytes) {
-    arena->pageSize = meta_get_page_size();
-    arena->reservedSize = meta_align_up(reserveSizeBytes, arena->pageSize);
+    arena->pageSize = get_page_size();
+    arena->reservedSize = align_up(reserveSizeBytes, arena->pageSize);
     arena->committedSize = 0;
     arena->position = 0;
 #ifdef _WIN32
@@ -139,7 +125,7 @@ static void *arena_allocate(LinearMemoryArena *arena, size_t size) {
         return NULL;
     }
     if (newPosition > arena->committedSize) {
-        size_t newCommitSize = meta_align_up(newPosition, arena->pageSize);
+        size_t newCommitSize = align_up(newPosition, arena->pageSize);
         size_t bytesToCommit = newCommitSize - arena->committedSize;
         void *commitAddress = arena->memory + arena->committedSize;
 #ifdef _WIN32
@@ -168,34 +154,32 @@ static char *arena_duplicate_string(LinearMemoryArena *arena, const char *text) 
     return buffer;
 }
 
-// ----------------------------- Internals ----------------------------------
-
 typedef struct CounterIdentifier {
     char *name;
     char *filePath;
     int lineNumber;
     int isUnique;
-    int value; // -1 for auto
+    int value;
 } CounterIdentifier;
 
 typedef struct CounterRegistry {
     CounterRegistryOptions options;
-    CounterIdentifier *identifiers;
+    CounterIdentifier *identifierList;
     size_t identifierCount;
     size_t identifierCapacity;
 } CounterRegistry;
 
 struct CounterProject {
     LinearMemoryArena arena;
-    char **extensions;
-    size_t extensionCount;
-    size_t extensionCapacity;
-    char **directories;
+    char **fileExtensions;
+    size_t fileExtensionCount;
+    size_t fileExtensionCapacity;
+    char **searchDirectories;
     size_t directoryCount;
     size_t directoryCapacity;
-    char **inputPaths;
-    size_t pathCount;
-    size_t pathCapacity;
+    char **inputFilePaths;
+    size_t inputPathCount;
+    size_t inputPathCapacity;
     CounterRegistry *registries;
     size_t registryCount;
     size_t registryCapacity;
@@ -238,9 +222,28 @@ static void append_counter_registry(LinearMemoryArena *arena, CounterRegistry **
     (*array)[(*count)++] = *registry;
 }
 
- 
-
-// ----------------------------- FS -----------------------------------------
+static char *create_include_guard(LinearMemoryArena *arena, const char *headerPath) {
+    size_t length = strlen(headerPath);
+    size_t guardCapacity = (length * 2) + 8;
+    char *guard = (char*)arena_allocate(arena, guardCapacity);
+    if (!guard) return NULL;
+    size_t outIndex = 0;
+    guard[outIndex++] = 'M';
+    guard[outIndex++] = 'C';
+    guard[outIndex++] = '_';
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char ch = (unsigned char)headerPath[i];
+        if (isalnum(ch)) {
+            guard[outIndex++] = (char)toupper(ch);
+        } else {
+            if (outIndex == 0 || guard[outIndex - 1] != '_') guard[outIndex++] = '_';
+        }
+    }
+    if (outIndex == 0 || guard[outIndex - 1] != '_') guard[outIndex++] = '_';
+    guard[outIndex++] = 'H';
+    guard[outIndex] = '\0';
+    return guard;
+}
 
 static int is_directory(const char *path) {
     struct stat stats;
@@ -257,16 +260,16 @@ static int is_regular_file(const char *path) {
 static int has_supported_extension(CounterProject *project, const char *filename) {
     const char *extension = strrchr(filename, '.');
     if (!extension) return 0;
-    for (size_t i = 0; i < project->extensionCount; ++i) {
-        if (strcmp(extension, project->extensions[i]) == 0) return 1;
+    for (size_t i = 0; i < project->fileExtensionCount; ++i) {
+        if (strcmp(extension, project->fileExtensions[i]) == 0) return 1;
     }
     return 0;
 }
 
 static void scan_buffer_for_registry_markers(CounterProject *project, const char *buffer, size_t length, const char *filePath) {
     for (size_t registryIndex = 0; registryIndex < project->registryCount; ++registryIndex) {
-        const char *standardMarkerName = project->registries[registryIndex].options.markers.standard ? project->registries[registryIndex].options.markers.standard : "REGISTER_COUNTER";
-        const char *uniqueMarkerName = project->registries[registryIndex].options.markers.unique   ? project->registries[registryIndex].options.markers.unique   : "REGISTER_UNIQUE_COUNTER";
+        const char *standardMarkerName = project->registries[registryIndex].options.markerNames.standardMacroName ? project->registries[registryIndex].options.markerNames.standardMacroName : "REGISTER_COUNTER";
+        const char *uniqueMarkerName = project->registries[registryIndex].options.markerNames.uniqueMacroName   ? project->registries[registryIndex].options.markerNames.uniqueMacroName   : "REGISTER_UNIQUE_COUNTER";
         size_t standardMarkerLength = strlen(standardMarkerName) + 1;
         size_t uniqueMarkerLength = strlen(uniqueMarkerName) + 1;
         char *standardMarkerPattern = (char*)arena_allocate(&project->arena, standardMarkerLength + 1);
@@ -305,7 +308,7 @@ static void scan_buffer_for_registry_markers(CounterProject *project, const char
                     identifier.lineNumber = lineNumber;
                     identifier.isUnique = uniqueFlag[patternIndex];
                     identifier.value = explicitValue;
-                    append_counter_definition(&project->arena, &project->registries[registryIndex].identifiers, &project->registries[registryIndex].identifierCount, &project->registries[registryIndex].identifierCapacity, &identifier);
+                    append_counter_definition(&project->arena, &project->registries[registryIndex].identifierList, &project->registries[registryIndex].identifierCount, &project->registries[registryIndex].identifierCapacity, &identifier);
                 }
                 cursor = valueEnd + 1;
             }
@@ -315,7 +318,7 @@ static void scan_buffer_for_registry_markers(CounterProject *project, const char
 
 static int is_output_header_path(CounterProject *project, const char *filePath) {
     for (size_t registryIndex = 0; registryIndex < project->registryCount; ++registryIndex) {
-        const char *outputPath = project->registries[registryIndex].options.output_header;
+        const char *outputPath = project->registries[registryIndex].options.outputHeaderPath;
         if (outputPath && strcmp(outputPath, filePath) == 0) return 1;
     }
     return 0;
@@ -378,18 +381,21 @@ static void process_input_path(CounterProject *project, const char *path) {
     else if (is_regular_file(path)) process_file_path(project, path);
 }
 
-// ----------------------------- Output --------------------------------------
-
-static void write_counter_header_cpp(FILE *out, const CounterRegistryOptions *options, const CounterIdentifier *identifiers, size_t count, int maxValue) {
+static void write_counter_header_cpp(FILE *out, LinearMemoryArena *arena, const CounterRegistryOptions options, const CounterIdentifier *identifiers, size_t count, int maxValue) {
+    char *includeGuard = create_include_guard(arena, options.outputHeaderPath);
+    if (!includeGuard) return;
+    fprintf(out, "// THIS FILE IS AUTO-GENERATED BY METACOUNTER. DO NOT EDIT.\n");
+    fprintf(out, "#ifndef %s\n", includeGuard);
+    fprintf(out, "#define %s\n\n", includeGuard);
     fprintf(out, "#ifdef __cplusplus\n\n");
-    fprintf(out, "enum class %s : unsigned int {\n", options->enum_name);
+    fprintf(out, "enum class %s : unsigned int {\n", options.enumTypeName);
     for (size_t i = 0; i < count; ++i) {
         fprintf(out, "    %s = %d,\n", identifiers[i].name, identifiers[i].value);
     }
-    fprintf(out, "    %s = %d\n", options->count_name, maxValue + 1);
+    fprintf(out, "    %s = %d\n", options.countConstantName, maxValue + 1);
     fprintf(out, "};\n\n");
-    fprintf(out, "constexpr unsigned int %s_INT = %d;\n\n", options->count_name, maxValue + 1);
-    fprintf(out, "inline const char* get_name_for_%s(%s id) {\n", options->enum_name, options->enum_name);
+    fprintf(out, "constexpr unsigned int %s_INT = %d;\n\n", options.countConstantName, maxValue + 1);
+    fprintf(out, "inline const char* get_name_for_%s(%s id) {\n", options.enumTypeName, options.enumTypeName);
     fprintf(out, "    static const char* names[] = {\n");
     for (int value = 0; value <= maxValue; ++value) {
         int found = 0;
@@ -402,20 +408,20 @@ static void write_counter_header_cpp(FILE *out, const CounterRegistryOptions *op
     fprintf(out, "    unsigned int index = (unsigned int)id;\n");
     fprintf(out, "    if (index <= %d) return names[index];\n", maxValue);
     fprintf(out, "    return \"(invalid)\";\n}\n\n");
-    fprintf(out, "#define %s(name, ...) %s::name\n", options->markers.standard, options->enum_name);
-    fprintf(out, "#define %s(name, ...) %s::name\n\n", options->markers.unique, options->enum_name);
+    fprintf(out, "#define %s(name, ...) %s::name\n", options.markerNames.standardMacroName, options.enumTypeName);
+    fprintf(out, "#define %s(name, ...) %s::name\n\n", options.markerNames.uniqueMacroName, options.enumTypeName);
 }
 
-static void write_counter_header_c(FILE *out, const CounterRegistryOptions *options, const CounterIdentifier *identifiers, size_t count, int maxValue) {
+static void write_counter_header_c(FILE *out, const CounterRegistryOptions options, const CounterIdentifier *identifiers, size_t count, int maxValue) {
     fprintf(out, "#else\n\n");
     fprintf(out, "typedef enum {\n");
     for (size_t i = 0; i < count; ++i) {
-        fprintf(out, "    %s_%s = %d,\n", options->enum_name, identifiers[i].name, identifiers[i].value);
+        fprintf(out, "    %s_%s = %d,\n", options.enumTypeName, identifiers[i].name, identifiers[i].value);
     }
-    fprintf(out, "    %s_%s = %d\n", options->enum_name, options->count_name, maxValue + 1);
-    fprintf(out, "} %s;\n\n", options->enum_name);
-    fprintf(out, "#define %s_INT %d\n\n", options->count_name, maxValue + 1);
-    fprintf(out, "static inline const char* get_name_for_%s(%s id) {\n", options->enum_name, options->enum_name);
+    fprintf(out, "    %s_%s = %d\n", options.enumTypeName, options.countConstantName, maxValue + 1);
+    fprintf(out, "} %s;\n\n", options.enumTypeName);
+    fprintf(out, "#define %s_INT %d\n\n", options.countConstantName, maxValue + 1);
+    fprintf(out, "static inline const char* get_name_for_%s(%s id) {\n", options.enumTypeName, options.enumTypeName);
     fprintf(out, "    static const char* names[] = {\n");
     for (int value = 0; value <= maxValue; ++value) {
         int found = 0;
@@ -427,8 +433,8 @@ static void write_counter_header_c(FILE *out, const CounterRegistryOptions *opti
     fprintf(out, "    };\n");
     fprintf(out, "    if ((unsigned int)id <= %d) return names[(unsigned int)id];\n", maxValue);
     fprintf(out, "    return \"(invalid)\";\n}\n\n");
-    fprintf(out, "#define %s(name, ...) %s_##name\n", options->markers.standard, options->enum_name);
-    fprintf(out, "#define %s(name, ...) %s_##name\n\n", options->markers.unique, options->enum_name);
+    fprintf(out, "#define %s(name, ...) %s_##name\n", options.markerNames.standardMacroName, options.enumTypeName);
+    fprintf(out, "#define %s(name, ...) %s_##name\n\n", options.markerNames.uniqueMacroName, options.enumTypeName);
     fprintf(out, "#endif\n");
 }
 
@@ -441,7 +447,7 @@ static int generate_single_registry(CounterProject *project, CounterRegistry *re
     int errorFound = 0;
 
     for (size_t i = 0; i < registry->identifierCount; ++i) {
-        CounterIdentifier *current = &registry->identifiers[i];
+        CounterIdentifier *current = &registry->identifierList[i];
         int duplicateFound = 0;
         for (size_t j = 0; j < finalCount; ++j) {
             if (strcmp(current->name, finalIdentifiers[j].name) == 0) {
@@ -449,9 +455,9 @@ static int generate_single_registry(CounterProject *project, CounterRegistry *re
                 if (current->isUnique) {
                     fprintf(stderr, "[ERROR] Unique identifier '%s' redefined.\n  Redefined: %s:%d\n", current->name, current->filePath, current->lineNumber);
                     errorFound = 1;
-                } else if (registry->options.duplicate_policy == MC_DUP_WARN) {
-                    fprintf(stdout, "[WARNING] Identifier '%s' redefined at %s:%d\n", current->name, current->filePath, current->lineNumber);
-                } else if (registry->options.duplicate_policy == MC_DUP_ERROR) {
+                } else if (registry->options.duplicatePolicy == MC_DUP_WARN) {
+                    fprintf(stdout, "[WARN] Identifier '%s' redefined at %s:%d\n", current->name, current->filePath, current->lineNumber);
+                } else if (registry->options.duplicatePolicy == MC_DUP_ERROR) {
                     fprintf(stderr, "[ERROR] Identifier '%s' redefined at %s:%d\n", current->name, current->filePath, current->lineNumber);
                     errorFound = 1;
                 }
@@ -469,107 +475,103 @@ static int generate_single_registry(CounterProject *project, CounterRegistry *re
 
     if (errorFound) return 0;
 
-    if (!registry->options.output_header || !registry->options.enum_name || !registry->options.count_name) {
+    if (!registry->options.outputHeaderPath || !registry->options.enumTypeName || !registry->options.countConstantName) {
         fprintf(stderr, "FATAL: Registry options incomplete (output/enum/count).\n");
         return 0;
     }
 
-    FILE *out = fopen(registry->options.output_header, "w");
+    FILE *out = fopen(registry->options.outputHeaderPath, "w");
     if (!out) {
-        fprintf(stderr, "FATAL: Cannot open output file '%s'\n", registry->options.output_header);
+        fprintf(stderr, "FATAL: Cannot open output file '%s'\n", registry->options.outputHeaderPath);
         return 0;
     }
-    fprintf(out, "// THIS FILE IS AUTO-GENERATED BY METACOUNTER. DO NOT EDIT.\n");
     fprintf(out, "#pragma once\n\n");
     fprintf(out, "#include <stdint.h>\n\n");
-    write_counter_header_cpp(out, &registry->options, finalIdentifiers, finalCount, maxValue);
-    write_counter_header_c(out, &registry->options, finalIdentifiers, finalCount, maxValue);
+    write_counter_header_cpp(out, &project->arena, registry->options, finalIdentifiers, finalCount, maxValue);
+    write_counter_header_c(out, registry->options, finalIdentifiers, finalCount, maxValue);
+    fprintf(out, "#endif\n");
     fclose(out);
     return 1;
 }
 
-// ----------------------------- Public API impl -----------------------------
-
 CounterProject* mc_begin_counter_project(void) {
-    CounterProject *p = (CounterProject*)malloc(sizeof(CounterProject));
-    if (!p) return NULL;
-    memset(p, 0, sizeof(*p));
-    arena_initialize(&p->arena, 64 * 1024 * 1024);
-    return p;
+    CounterProject *project = (CounterProject*)malloc(sizeof(CounterProject));
+    if (!project) return NULL;
+    memset(project, 0, sizeof(*project));
+    arena_initialize(&project->arena, 64 * 1024 * 1024);
+    return project;
 }
 
-bool mc_add_file_extensions(CounterProject *p, const char *const *extensions, size_t count) {
-    if (!p || !extensions || count == 0) return false;
+bool mc_add_file_extensions(CounterProject *project, const char *const *extensions, size_t count) {
+    if (!project || !extensions || count == 0) return false;
     for (size_t i = 0; i < count; ++i) {
-        append_string(&p->arena, &p->extensions, &p->extensionCount, &p->extensionCapacity, extensions[i]);
+        append_string(&project->arena, &project->fileExtensions, &project->fileExtensionCount, &project->fileExtensionCapacity, extensions[i]);
     }
     return true;
 }
 
-bool mc_add_search_directories(CounterProject *p, const char *const *directories, size_t count) {
-    if (!p || !directories || count == 0) return false;
+bool mc_add_search_directories(CounterProject *project, const char *const *directories, size_t count) {
+    if (!project || !directories || count == 0) return false;
     for (size_t i = 0; i < count; ++i) {
-        append_string(&p->arena, &p->directories, &p->directoryCount, &p->directoryCapacity, directories[i]);
+        append_string(&project->arena, &project->searchDirectories, &project->directoryCount, &project->directoryCapacity, directories[i]);
     }
     return true;
 }
 
-bool mc_add_input_paths(CounterProject *p, const char *const *paths, size_t count) {
-    if (!p || !paths || count == 0) return false;
+bool mc_add_input_paths(CounterProject *project, const char *const *paths, size_t count) {
+    if (!project || !paths || count == 0) return false;
     for (size_t i = 0; i < count; ++i) {
-        append_string(&p->arena, &p->inputPaths, &p->pathCount, &p->pathCapacity, paths[i]);
+        append_string(&project->arena, &project->inputFilePaths, &project->inputPathCount, &project->inputPathCapacity, paths[i]);
     }
     return true;
 }
 
-bool mc_add_counter_registry(CounterProject *p, CounterRegistryOptions options) {
-    if (!p || !options.output_header) return false;
-    if (!options.enum_name) options.enum_name = "CounterID";
-    if (!options.count_name) options.count_name = "MAX_COUNT";
-    if (!options.markers.standard) options.markers.standard = "REGISTER_COUNTER";
-    if (!options.markers.unique) options.markers.unique = "REGISTER_UNIQUE_COUNTER";
-    CounterRegistry r; memset(&r, 0, sizeof(r));
-    r.options.output_header = arena_duplicate_string(&p->arena, options.output_header);
-    r.options.enum_name     = arena_duplicate_string(&p->arena, options.enum_name);
-    r.options.count_name    = arena_duplicate_string(&p->arena, options.count_name);
-    r.options.markers.standard = arena_duplicate_string(&p->arena, options.markers.standard);
-    r.options.markers.unique   = arena_duplicate_string(&p->arena, options.markers.unique);
-    r.options.duplicate_policy = options.duplicate_policy;
-    append_counter_registry(&p->arena, &p->registries, &p->registryCount, &p->registryCapacity, &r);
+bool mc_add_counter_registry(CounterProject *project, CounterRegistryOptions options) {
+    if (!project || !options.outputHeaderPath) return false;
+    if (!options.enumTypeName) options.enumTypeName = "CounterID";
+    if (!options.countConstantName) options.countConstantName = "MAX_COUNT";
+    if (!options.markerNames.standardMacroName) options.markerNames.standardMacroName = "REGISTER_COUNTER";
+    if (!options.markerNames.uniqueMacroName) options.markerNames.uniqueMacroName = "REGISTER_UNIQUE_COUNTER";
+    CounterRegistry registry; memset(&registry, 0, sizeof(registry));
+    registry.options.outputHeaderPath = arena_duplicate_string(&project->arena, options.outputHeaderPath);
+    registry.options.enumTypeName     = arena_duplicate_string(&project->arena, options.enumTypeName);
+    registry.options.countConstantName    = arena_duplicate_string(&project->arena, options.countConstantName);
+    registry.options.markerNames.standardMacroName = arena_duplicate_string(&project->arena, options.markerNames.standardMacroName);
+    registry.options.markerNames.uniqueMacroName   = arena_duplicate_string(&project->arena, options.markerNames.uniqueMacroName);
+    registry.options.duplicatePolicy = options.duplicatePolicy;
+    append_counter_registry(&project->arena, &project->registries, &project->registryCount, &project->registryCapacity, &registry);
     return true;
 }
 
-bool mc_generate_all_registries(CounterProject *p) {
-    if (!p) return false;
-    if (p->extensionCount == 0) {
+bool mc_generate_all_registries(CounterProject *project) {
+    if (!project) return false;
+    if (project->fileExtensionCount == 0) {
         fprintf(stderr, "FATAL: No extensions added.\n");
         return false;
     }
-    if (p->registryCount == 0) {
+    if (project->registryCount == 0) {
         fprintf(stderr, "FATAL: No registries added.\n");
         return false;
     }
 
-    for (size_t i = 0; i < p->directoryCount; ++i) process_input_path(p, p->directories[i]);
-    for (size_t i = 0; i < p->pathCount; ++i)   process_input_path(p, p->inputPaths[i]);
+    for (size_t i = 0; i < project->directoryCount; ++i) process_input_path(project, project->searchDirectories[i]);
+    for (size_t i = 0; i < project->inputPathCount; ++i) process_input_path(project, project->inputFilePaths[i]);
 
     int ok = 1;
-    for (size_t r = 0; r < p->registryCount; ++r) ok = ok && generate_single_registry(p, &p->registries[r]);
+    for (size_t registryIndex = 0; registryIndex < project->registryCount; ++registryIndex) ok = ok && generate_single_registry(project, &project->registries[registryIndex]);
     return ok ? true : false;
 }
 
-// ----------------------------- Self-rebuild --------------------------------
-
-static int meta_stat_mtime(const char *path, time_t *out) {
-    struct stat s;
-    if (stat(path, &s) != 0) return -1;
-    *out = s.st_mtime;
+static int get_file_timestamp(const char *path, time_t *timestamp) {
+    struct stat stats;
+    if (stat(path, &stats) != 0) return -1;
+    *timestamp = stats.st_mtime;
     return 0;
 }
 
 bool mc_execute_self_rebuild(int argc, char **argv, SelfRebuildConfiguration options) {
-    const char *exePath = options.exe_path && options.exe_path[0] ? options.exe_path : (argv && argv[0] ? argv[0] : NULL);
-    const char *sourcePath = options.src_path && options.src_path[0] ? options.src_path : __FILE__;
+    const char *exePath = options.exePath && options.exePath[0] ? options.exePath : (argv && argv[0] ? argv[0] : NULL);
+    const char *sourcePath = options.srcPath && options.srcPath[0] ? options.srcPath : __FILE__;
     const char *compiler = options.cc && options.cc[0] ? options.cc : "cc";
     const char *compilerFlags = options.cflags && options.cflags[0] ? options.cflags : "-O2 -Wall -Wextra";
     if (!exePath || !sourcePath) return true;
@@ -577,10 +579,10 @@ bool mc_execute_self_rebuild(int argc, char **argv, SelfRebuildConfiguration opt
     time_t executableTime = 0;
     time_t sourceTime = 0;
     time_t headerTime = 0;
-    if (meta_stat_mtime(exePath, &executableTime) != 0) executableTime = 0;
-    if (meta_stat_mtime(sourcePath, &sourceTime) != 0) return true;
+    if (get_file_timestamp(exePath, &executableTime) != 0) executableTime = 0;
+    if (get_file_timestamp(sourcePath, &sourceTime) != 0) return true;
     const char *publicHeader = "include/metacounter.h";
-    if (meta_stat_mtime(publicHeader, &headerTime) != 0) headerTime = sourceTime;
+    if (get_file_timestamp(publicHeader, &headerTime) != 0) headerTime = sourceTime;
 
     time_t newestSourceTimestamp = sourceTime > headerTime ? sourceTime : headerTime;
 
