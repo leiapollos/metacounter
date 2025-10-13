@@ -30,15 +30,15 @@ Create a tiny generator (example provided at `tools/gen_counters.c`) and compile
 int main(int argc, char **argv) {
     META_SELF_REBUILD(argc, argv);
 
-    MC_Project p = mc_begin();
+    MC_Project p = mc_begin_project_context();
     MC_EXTS(&p, ".h", ".hpp", ".c", ".cpp");
     MC_FOLDERS(&p, "src");
 
-    MC_REGISTRY(&p, .output_header = "src/generated_counter_registry.h",
-                     .enum_name = "CounterID",
-                     .count_name = "MAX_COUNT");
+    MC_REGISTRY(&p, .outputHeader = "src/generated_counter_registry.h",
+                     .enumName = "CounterID",
+                     .countName = "MAX_COUNT");
 
-    return mc_generate(&p) ? 0 : 1;
+    return mc_generate_all(&p) ? 0 : 1;
 }
 ```
 
@@ -54,21 +54,21 @@ cc -O2 -Wall -Wextra -o tools/gen_counters tools/gen_counters.c
 With the header-only API you configure everything in your generator code. Common operations:
 
 ```c
-MC_Project p = mc_begin();
+MC_Project p = mc_begin_project_context();
 MC_EXTS(&p, ".h", ".hpp", ".c", ".cpp");
 MC_FOLDERS(&p, "src", "lib");
 
 // Add one or more registries
-MC_REGISTRY(&p, .output_header = "src/generated_counter_registry.h",
-                 .enum_name = "CounterID",
-                 .count_name = "MAX_COUNT");
+MC_REGISTRY(&p, .outputHeader = "src/generated_counter_registry.h",
+                 .enumName = "CounterID",
+                 .countName = "MAX_COUNT");
 
-MC_REGISTRY(&p, .output_header = "src/generated_event_registry.h",
-                 .enum_name = "EventID",
-                 .count_name = "EVENT_COUNT",
+MC_REGISTRY(&p, .outputHeader = "src/generated_event_registry.h",
+                 .enumName = "EventID",
+                 .countName = "EVENT_COUNT",
                  .markers = { "REGISTER_EVENT", "REGISTER_UNIQUE_EVENT" });
 
-mc_generate(&p);
+mc_generate_all(&p);
 ```
 
 ## Example: Building a Simple Profiler
@@ -165,7 +165,7 @@ With the header generated, your project can now compile. The `Profiler` class ha
 
 - `MC_EXTS(&p, ".h", ".hpp", ".c", ".cpp")` — add extensions to scan
 - `MC_FOLDERS(&p, "src", "lib")` — add folders to traverse
-- `MC_REGISTRY(&p, .output_header = "...", .enum_name = "...", .count_name = "...", .markers = { "STD", "UNIQUE" })`
+- `MC_REGISTRY(&p, .outputHeader = "...", .enumName = "...", .countName = "...", .markers = { "STD", "UNIQUE" })`
 - `META_SELF_REBUILD(argc, argv)` — optionally rebuild the generator when stale (like NOB, renamed).
 
 ## License
