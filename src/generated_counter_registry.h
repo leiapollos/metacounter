@@ -5,7 +5,7 @@
 
 #ifdef __cplusplus
 
-enum class CounterID : uint32_t {
+enum class CounterID : unsigned int {
     PlayerHealth = 0,
     PlayerStamina = 1,
     DrawCalls = 2,
@@ -16,7 +16,7 @@ enum class CounterID : uint32_t {
     MAX_COUNT = 7
 };
 
-constexpr uint32_t MAX_COUNT_INT = 7;
+constexpr unsigned int MAX_COUNT_INT = 7;
 
 inline const char* get_name_for_CounterID(CounterID id) {
     static const char* names[] = {
@@ -28,7 +28,8 @@ inline const char* get_name_for_CounterID(CounterID id) {
         "MainRenderContext",
         "ActiveAudioChannels",
     };
-    if ((uint32_t)id <= 6) return names[(uint32_t)id];
+    unsigned int idx = (unsigned int)id;
+    if (idx <= 6) return names[idx];
     return "(invalid)";
 }
 
@@ -60,7 +61,7 @@ static inline const char* get_name_for_CounterID(CounterID id) {
         "MainRenderContext",
         "ActiveAudioChannels",
     };
-    if (id <= 6) return names[id];
+    if ((unsigned int)id <= 6) return names[(unsigned int)id];
     return "(invalid)";
 }
 
